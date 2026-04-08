@@ -4,7 +4,7 @@
 //|                                                                  |
 //| Architecture:                                                    |
 //|   - Baseline   : EMA (configurable period)                       |
-//|   - C1         : Stochastic (configurable) – primary entry      |
+//|   - C1         : SSL Channel (configurable) – primary entry     |
 //|   - C2         : RSI (configurable) – confirmation filter        |
 //|   - Volume     : ATR-based volatility gate                       |
 //|   - Exit       : Awesome Oscillator zero-cross (configurable)   |
@@ -38,14 +38,11 @@ input int      ATR_Period       = 14;    // ATR period
 input int      Baseline_Period  = 20;    // Baseline EMA period
 input double   Baseline_MaxDist = 1.0;  // Max distance from baseline in ATR ("A Bridge Too Far")
 
-// ── C1: Stochastic ───────────────────────────────────────────────
-// Bullish signal when %K crosses above %D below oversold level
-// Bearish signal when %K crosses below %D above overbought level
-input int      C1_KPeriod       = 5;
-input int      C1_DPeriod       = 3;
-input int      C1_Slowing       = 3;
-input double   C1_Oversold      = 20.0;
-input double   C1_Overbought    = 80.0;
+// ── C1: SSL Channel ──────────────────────────────────────────────
+// Uses SMA(High, period) as upper band and SMA(Low, period) as lower band.
+// Bullish signal: close crosses above the upper band (SMA of Highs)
+// Bearish signal: close crosses below the lower band (SMA of Lows)
+input int      C1_SSL_Period    = 10;   // SSL Channel SMA period
 
 // ── C2: RSI ──────────────────────────────────────────────────────
 // Bullish when RSI > 50 and not overbought; Bearish when RSI < 50 and not oversold
@@ -76,11 +73,12 @@ CTrade         trade;
 CPositionInfo  pos;
 
 // Indicator handles
-int hATR       = INVALID_HANDLE;
-int hBaseline  = INVALID_HANDLE;
-int hC1_K      = INVALID_HANDLE;
-int hC2_RSI    = INVALID_HANDLE;
-int hExit_AO   = INVALID_HANDLE;
+int hATR          = INVALID_HANDLE;
+int hBaseline     = INVALID_HANDLE;
+int hC1_SSL_High  = INVALID_HANDLE;  // SSL Channel upper band: SMA(High)
+int hC1_SSL_Low   = INVALID_HANDLE;  // SSL Channel lower band: SMA(Low)
+int hC2_RSI       = INVALID_HANDLE;
+int hExit_AO      = INVALID_HANDLE;
 
 datetime lastBarTime = 0;
 
@@ -95,15 +93,16 @@ int OnInit()
 {
    trade.SetExpertMagicNumber(MagicNumber); // Will be overridden per order
 
-   hATR      = iATR(_Symbol, PERIOD_D1, ATR_Period);
-   hBaseline = iMA(_Symbol, PERIOD_D1, Baseline_Period, 0, MODE_EMA, PRICE_CLOSE);
-   hC1_K     = iStochastic(_Symbol, PERIOD_D1, C1_KPeriod, C1_DPeriod, C1_Slowing, MODE_SMA, STO_LOWHIGH);
-   hC2_RSI   = iRSI(_Symbol, PERIOD_D1, C2_Period, PRICE_CLOSE);
-   hExit_AO  = iAO(_Symbol, PERIOD_D1);
+   hATR         = iATR(_Symbol, PERIOD_D1, ATR_Period);
+   hBaseline    = iMA(_Symbol, PERIOD_D1, Baseline_Period, 0, MODE_EMA, PRICE_CLOSE);
+   hC1_SSL_High = iMA(_Symbol, PERIOD_D1, C1_SSL_Period, 0, MODE_SMA, PRICE_HIGH);
+   hC1_SSL_Low  = iMA(_Symbol, PERIOD_D1, C1_SSL_Period, 0, MODE_SMA, PRICE_LOW);
+   hC2_RSI      = iRSI(_Symbol, PERIOD_D1, C2_Period, PRICE_CLOSE);
+   hExit_AO     = iAO(_Symbol, PERIOD_D1);
 
    if(hATR == INVALID_HANDLE || hBaseline == INVALID_HANDLE ||
-      hC1_K == INVALID_HANDLE || hC2_RSI == INVALID_HANDLE ||
-      hExit_AO == INVALID_HANDLE)
+      hC1_SSL_High == INVALID_HANDLE || hC1_SSL_Low == INVALID_HANDLE ||
+      hC2_RSI == INVALID_HANDLE || hExit_AO == INVALID_HANDLE)
    {
       Print("NNFX EA: Failed to create one or more indicator handles.");
       return INIT_FAILED;
@@ -117,7 +116,8 @@ void OnDeinit(const int reason)
 {
    IndicatorRelease(hATR);
    IndicatorRelease(hBaseline);
-   IndicatorRelease(hC1_K);
+   IndicatorRelease(hC1_SSL_High);
+   IndicatorRelease(hC1_SSL_Low);
    IndicatorRelease(hC2_RSI);
    IndicatorRelease(hExit_AO);
 }
@@ -135,18 +135,20 @@ void OnTick()
    lastBarTime = currentBarTime;
 
    // ── New candle: gather indicator values from the CLOSED bar [1] ─
-   double atr       = GetBuffer(hATR,      0, 1);
-   double baseline  = GetBuffer(hBaseline, 0, 1);
-   double baseline_2 = GetBuffer(hBaseline, 0, 2); // baseline two bars ago (one-candle rule)
-   double c1_k_now  = GetBuffer(hC1_K,     0, 1); // %K current
-   double c1_k_prev = GetBuffer(hC1_K,     0, 2); // %K previous
-   double c1_k_2ago = GetBuffer(hC1_K,     0, 3); // %K two bars ago (one-candle rule)
-   double c1_d_now  = GetBuffer(hC1_K,     1, 1); // %D current
-   double c1_d_prev = GetBuffer(hC1_K,     1, 2); // %D previous
-   double c1_d_2ago = GetBuffer(hC1_K,     1, 3); // %D two bars ago (one-candle rule)
-   double rsi       = GetBuffer(hC2_RSI,   0, 1);
-   double closeD1   = iClose(_Symbol, PERIOD_D1, 1);
-   double closeD1_2 = iClose(_Symbol, PERIOD_D1, 2); // close two bars ago (one-candle rule)
+   double atr        = GetBuffer(hATR,          0, 1);
+   double baseline   = GetBuffer(hBaseline,     0, 1);
+   double baseline_2 = GetBuffer(hBaseline,     0, 2); // baseline two bars ago (one-candle rule)
+   // SSL Channel bands
+   double ssl_hi_1  = GetBuffer(hC1_SSL_High,  0, 1); // upper band, candle [1]
+   double ssl_hi_2  = GetBuffer(hC1_SSL_High,  0, 2); // upper band, candle [2]
+   double ssl_hi_3  = GetBuffer(hC1_SSL_High,  0, 3); // upper band, candle [3] (one-candle rule)
+   double ssl_lo_1  = GetBuffer(hC1_SSL_Low,   0, 1); // lower band, candle [1]
+   double ssl_lo_2  = GetBuffer(hC1_SSL_Low,   0, 2); // lower band, candle [2]
+   double ssl_lo_3  = GetBuffer(hC1_SSL_Low,   0, 3); // lower band, candle [3] (one-candle rule)
+   double rsi        = GetBuffer(hC2_RSI,       0, 1);
+   double closeD1    = iClose(_Symbol, PERIOD_D1, 1);
+   double closeD1_2  = iClose(_Symbol, PERIOD_D1, 2); // two bars ago (one-candle rule)
+   double closeD1_3  = iClose(_Symbol, PERIOD_D1, 3); // three bars ago (one-candle rule)
 
    if(atr == EMPTY_VALUE || baseline == EMPTY_VALUE) return;
 
@@ -172,15 +174,14 @@ void OnTick()
    double distanceFromBaseline = MathAbs(closeD1 - baseline);
    bool tooFarFromBaseline = (distanceFromBaseline > atr * Baseline_MaxDist);
 
-   // ── C1: Stochastic Cross ──────────────────────────────────────
+   // ── C1: SSL Channel Cross ─────────────────────────────────────
    // One-candle rule: cross is valid if it occurred on candle [1] or [2].
-   // Bullish: %K crossed above %D on candle [1] (between [2]→[1])
-   //       or on candle [2] (between [3]→[2])
-   bool c1_bull = ((c1_k_prev < c1_d_prev) && (c1_k_now  >= c1_d_now))   // cross on [1]
-               || ((c1_k_2ago < c1_d_2ago) && (c1_k_prev >= c1_d_prev)); // cross on [2]
-   // Bearish: %K crossed below %D on candle [1] or [2]
-   bool c1_bear = ((c1_k_prev > c1_d_prev) && (c1_k_now  <= c1_d_now))   // cross on [1]
-               || ((c1_k_2ago > c1_d_2ago) && (c1_k_prev <= c1_d_prev)); // cross on [2]
+   // Bullish: close crossed above the upper band (SMA of Highs)
+   bool c1_bull = ((closeD1_2 <= ssl_hi_2) && (closeD1   > ssl_hi_1))   // cross on [1]
+               || ((closeD1_3 <= ssl_hi_3) && (closeD1_2 > ssl_hi_2)); // cross on [2]
+   // Bearish: close crossed below the lower band (SMA of Lows)
+   bool c1_bear = ((closeD1_2 >= ssl_lo_2) && (closeD1   < ssl_lo_1))   // cross on [1]
+               || ((closeD1_3 >= ssl_lo_3) && (closeD1_2 < ssl_lo_2)); // cross on [2]
 
    // ── C2: RSI Filter ───────────────────────────────────────────
    // Confirm direction AND reject exhausted momentum (overbought/oversold)
