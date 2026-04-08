@@ -135,12 +135,16 @@ void OnTick()
    // ── New candle: gather indicator values from the CLOSED bar [1] ─
    double atr       = GetBuffer(hATR,      0, 1);
    double baseline  = GetBuffer(hBaseline, 0, 1);
+   double baseline_2 = GetBuffer(hBaseline, 0, 2); // baseline two bars ago (one-candle rule)
    double c1_k_now  = GetBuffer(hC1_K,     0, 1); // %K current
    double c1_k_prev = GetBuffer(hC1_K,     0, 2); // %K previous
+   double c1_k_2ago = GetBuffer(hC1_K,     0, 3); // %K two bars ago (one-candle rule)
    double c1_d_now  = GetBuffer(hC1_K,     1, 1); // %D current
    double c1_d_prev = GetBuffer(hC1_K,     1, 2); // %D previous
+   double c1_d_2ago = GetBuffer(hC1_K,     1, 3); // %D two bars ago (one-candle rule)
    double rsi       = GetBuffer(hC2_RSI,   0, 1);
    double closeD1   = iClose(_Symbol, PERIOD_D1, 1);
+   double closeD1_2 = iClose(_Symbol, PERIOD_D1, 2); // close two bars ago (one-candle rule)
 
    if(atr == EMPTY_VALUE || baseline == EMPTY_VALUE) return;
 
@@ -156,19 +160,25 @@ void OnTick()
    bool bankerOpen = PositionExists(MAGIC_BANKER);
    bool runnerOpen = PositionExists(MAGIC_RUNNER);
 
-   // ── Baseline Direction ────────────────────────────────────────
-   bool priceAboveBaseline = (closeD1 > baseline);
-   bool priceBelowBaseline = (closeD1 < baseline);
+   // ── Baseline Direction ─────────────────────────────────────────
+   // One-candle rule: accept if price was on the correct side of the
+   // baseline on either of the last two closed candles.
+   bool priceAboveBaseline = (closeD1 > baseline) || (closeD1_2 > baseline_2);
+   bool priceBelowBaseline = (closeD1 < baseline) || (closeD1_2 < baseline_2);
 
    // ── "A Bridge Too Far" filter ─────────────────────────────────
    double distanceFromBaseline = MathAbs(closeD1 - baseline);
    bool tooFarFromBaseline = (distanceFromBaseline > atr * Baseline_MaxDist);
 
    // ── C1: Stochastic Cross ──────────────────────────────────────
-   // Bullish: %K crossed above %D (was below, now above)
-   bool c1_bull = (c1_k_prev < c1_d_prev) && (c1_k_now >= c1_d_now);
-   // Bearish: %K crossed below %D (was above, now below)
-   bool c1_bear = (c1_k_prev > c1_d_prev) && (c1_k_now <= c1_d_now);
+   // One-candle rule: cross is valid if it occurred on candle [1] or [2].
+   // Bullish: %K crossed above %D on candle [1] (between [2]→[1])
+   //       or on candle [2] (between [3]→[2])
+   bool c1_bull = ((c1_k_prev < c1_d_prev) && (c1_k_now  >= c1_d_now))   // cross on [1]
+               || ((c1_k_2ago < c1_d_2ago) && (c1_k_prev >= c1_d_prev)); // cross on [2]
+   // Bearish: %K crossed below %D on candle [1] or [2]
+   bool c1_bear = ((c1_k_prev > c1_d_prev) && (c1_k_now  <= c1_d_now))   // cross on [1]
+               || ((c1_k_2ago > c1_d_2ago) && (c1_k_prev <= c1_d_prev)); // cross on [2]
 
    // ── C2: RSI Filter ───────────────────────────────────────────
    bool c2_bull = (rsi > C2_BullThresh);
