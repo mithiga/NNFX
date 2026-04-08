@@ -263,9 +263,11 @@ void OpenNNFXTrade(ENUM_ORDER_TYPE direction, double atr)
 //────────────────────────────────────────────────────────────────────
 void ManageOpenPositions()
 {
-   double ao_now  = GetBuffer(hExit_AO, 0, 1);
-   double ao_prev = GetBuffer(hExit_AO, 0, 2);
-   double atr     = GetBuffer(hATR,     0, 1);
+   double ao_now   = GetBuffer(hExit_AO,   0, 1);
+   double ao_prev  = GetBuffer(hExit_AO,   0, 2);
+   double atr      = GetBuffer(hATR,       0, 1);
+   double baseline = GetBuffer(hBaseline,  0, 1); // primary exit: baseline cross
+   double closeD1  = iClose(_Symbol, PERIOD_D1, 1);
 
    // ── Check if Banker is still open or already closed ──────────
    bool bankerOpen = PositionExists(MAGIC_BANKER);
@@ -279,7 +281,7 @@ void ManageOpenPositions()
       MoveRunnerToBreakEven(atr);
    }
 
-   // ── Exit: close Runner on AO zero-cross against position ─────
+   // ── Exit: Baseline cross (primary) or AO zero-cross (early) ──
    if(runnerOpen)
    {
       for(int i = PositionsTotal() - 1; i >= 0; i--)
@@ -291,15 +293,20 @@ void ManageOpenPositions()
          bool isBuy  = (pos.PositionType() == POSITION_TYPE_BUY);
          bool isSell = (pos.PositionType() == POSITION_TYPE_SELL);
 
-         // AO crosses zero against the trade
-         bool exitLong  = isBuy  && (ao_prev >= 0.0) && (ao_now < 0.0);
-         bool exitShort = isSell && (ao_prev <= 0.0) && (ao_now > 0.0);
+         // Primary exit: price closed on the opposite side of the Baseline
+         bool exitBaseline = (isBuy  && closeD1 < baseline)
+                          || (isSell && closeD1 > baseline);
 
-         if(exitLong || exitShort)
+         // Early exit: AO crosses zero against the trade
+         bool exitAO = (isBuy  && (ao_prev >= 0.0) && (ao_now < 0.0))
+                    || (isSell && (ao_prev <= 0.0) && (ao_now > 0.0));
+
+         if(exitBaseline || exitAO)
          {
+            string reason = exitBaseline ? "baseline cross" : "AO zero-cross";
             trade.SetExpertMagicNumber(MAGIC_RUNNER);
             if(trade.PositionClose(pos.Ticket()))
-               Print("NNFX: Runner closed by AO exit signal.");
+               Print("NNFX: Runner closed by ", reason, ".");
             else
                Print("NNFX: Runner close failed – ", trade.ResultRetcodeDescription());
          }
