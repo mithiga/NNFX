@@ -48,10 +48,12 @@ input double   C1_Oversold      = 20.0;
 input double   C1_Overbought    = 80.0;
 
 // ── C2: RSI ──────────────────────────────────────────────────────
-// Bullish when RSI > 50, Bearish when RSI < 50
+// Bullish when RSI > 50 and not overbought; Bearish when RSI < 50 and not oversold
 input int      C2_Period        = 14;
 input double   C2_BullThresh    = 50.0;  // RSI must be above this for long
 input double   C2_BearThresh    = 50.0;  // RSI must be below this for short
+input double   C2_Overbought    = 70.0;  // RSI at/above this filters out long entries (momentum exhausted)
+input double   C2_Oversold      = 30.0;  // RSI at/below this filters out short entries (momentum exhausted)
 
 // ── Volume/Volatility: ATR gate ───────────────────────────────────
 // Trade only when ATR > MinATR_Pips (filters dead/flat markets)
@@ -181,8 +183,9 @@ void OnTick()
                || ((c1_k_2ago > c1_d_2ago) && (c1_k_prev <= c1_d_prev)); // cross on [2]
 
    // ── C2: RSI Filter ───────────────────────────────────────────
-   bool c2_bull = (rsi > C2_BullThresh);
-   bool c2_bear = (rsi < C2_BearThresh);
+   // Confirm direction AND reject exhausted momentum (overbought/oversold)
+   bool c2_bull = (rsi > C2_BullThresh) && (rsi < C2_Overbought);
+   bool c2_bear = (rsi < C2_BearThresh) && (rsi > C2_Oversold);
 
    // ── Entry Logic ──────────────────────────────────────────────
    // Note: AO is the EXIT indicator only – not used for entry
